@@ -1,0 +1,5 @@
+Data from the Banner Health Brain and Body Donation Program must be added
+to this directory.  It is not in the repository by default because special
+licensing is required to obtain this data.  If you have the data, place it
+in this directory on your local machine  but do not commit it back to any 
+public repository.  
