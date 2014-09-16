@@ -7,8 +7,10 @@ def load():
     """Load Parkinson's Disease Biomarkers Project data."""  
 
     module_path = os.path.dirname(os.path.realpath(__file__))
-    people_path = os.path.join(module_path,'Patient_Status.csv')
-    results_path = os.path.join(module_path,'Univ._of_Pennsylvania_Smell_ID_Test.csv')
+    data_path = os.path.join(module_path,'data')
+    
+    people_path = os.path.join(data_path,'Patient_Status.csv')
+    results_path = os.path.join(data_path,'Univ._of_Pennsylvania_Smell_ID_Test.csv')
 
     people = open(people_path,'r')
     people_reader = csv.reader(people)

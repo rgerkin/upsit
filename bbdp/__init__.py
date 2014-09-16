@@ -7,8 +7,9 @@ def load():
     """Load Banner Brain and Body Donation Project data."""  
 
     module_path = os.path.dirname(os.path.realpath(__file__))
-    upsit_path = os.path.join(module_path,'GerkinSmithUPSITautopsy9_10_14.xlsx')
-    cp_path = os.path.join(module_path,'Clinicopathological Correlations.xlsx')
+    data_path = os.path.join(module_path,'data')
+    upsit_path = os.path.join(data_path,'GerkinSmithUPSITautopsy9_10_14.xlsx')
+    cp_path = os.path.join(data_path,'Clinicopathological Correlations.xlsx')
 
     upsit_wb = xlrd.open_workbook(uspit_path)
     cp_wb = xlrd.open_workbook(cp_path)
