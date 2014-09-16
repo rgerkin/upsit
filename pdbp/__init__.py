@@ -38,9 +38,17 @@ def load():
     data = {key:value for key,value in data.items() if 'upsit' in value}
     return data
 
-def plot_cumul_hist(data):
-    """Plots cumulative histogram for PDBP data."""
-    smell = [sum(value['upsit']) for key,value in data.items()]
+def plot_cumul_hist(data,booklet=None):
+    """
+    Plots cumulative histogram for PDBP data.
+    data: output of load()
+    booklet: optionally restrict to one of four booklets (1-4).  
+    """
+    
+    if booklet:
+        smell = [value['upsit'][booklet-1] for key,value in data.items()]
+    else:
+        smell = [sum(value['upsit']) for key,value in data.items()]
     recruitment = [value['recruitment'] for key,value in data.items()]
     
     smell_ctl = [smell[i] for i in range(len(recruitment)) if recruitment[i]==0]
