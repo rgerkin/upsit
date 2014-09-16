@@ -1,4 +1,4 @@
-Data from the Parkinson's Disease Biomarker Project must be added
+Data from the Parkinson's Progression Marker Initiative must be added
 to this directory.  It is not in the repository by default because special
 licensing is required to obtain this data.  If you have the data, place it
 in this directory on your local machine  but do not commit it back to any 

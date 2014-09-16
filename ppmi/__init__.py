@@ -4,7 +4,7 @@ import csv
 from upsit import plt,cumul_hist
 
 def load():
-    """Load Parkinson's Disease Biomarkers Project data."""  
+    """Load Parkinson's Progression Marker Initiative data."""  
 
     module_path = os.path.dirname(os.path.realpath(__file__))
     data_path = os.path.join(module_path,'data')
@@ -42,7 +42,7 @@ def load():
 
 def plot_cumul_hist(data,booklet=None):
     """
-    Plots cumulative histogram for PDBP data.
+    Plots cumulative histogram for PPMI data.
     data: output of load()
     booklet: optionally restrict to one of four booklets (1-4).  
     """
