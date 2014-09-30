@@ -3,62 +3,82 @@ from datetime import datetime,timedelta
 
 import xlrd
 
-from upsit import Subject,Question,Response,QuestionSet,Test
+from upsit import Subject,Question,Response,QuestionSet,ResponseSet,Test
 
 def load():
     """Load Banner Brain and Body Donation Project data."""  
 
     module_path = os.path.dirname(os.path.realpath(__file__))
     data_path = os.path.join(module_path,'data')
-    upsit_path = os.path.join(data_path,'GerkinSmithUPSITautopsy9_10_14.xlsx')
+    disease_path = os.path.join(data_path,'GerkinSmithUPSITautopsy9_10_14.xlsx')
+    ctrl_path = os.path.join(data_path,'GerkinSmithQueryControls9_17_14.xlsx')
     cp_path = os.path.join(data_path,'Clinicopathological Correlations.xls')
 
-    upsit_wb = xlrd.open_workbook(upsit_path)
+    disease_wb = xlrd.open_workbook(disease_path)
+    ctrl_wb = xlrd.open_workbook(ctrl_path)
     cp_wb = xlrd.open_workbook(cp_path)
     
-    upsit_tests = upsit_wb.sheet_by_name('"pure"PDonly1test')
-    upsit_smelltestkey = upsit_wb.sheet_by_name('smellTestKey')
-    
-    cp = cp_wb.sheets()[0] # Only one sheet.  
-
-    questions = {}
+    test_key = disease_wb.sheet_by_name('smellTestKey')
+    questions = []
     for q in range(1,41):
-        row = upsit_smelltestkey.row_values(q)
+        row = test_key.row_values(q)
         options = row[1:5] # 4 possible options
         answer_num = int(row[6]-1) # Change from 0-indexed to 1-indexed.  
-        questions[q] = Question(q,options,answer_num)
+        questions.append(Question(options,answer_num))
+    question_set = QuestionSet(questions)
 
-    subjects = {}
-    tests = []
-    gender = {1:'M',2:'F'}
-    headers = upsit_tests.row_values(0)
-    hd = {key:i for i,key in enumerate(headers)}
-    for row_num in range(1,upsit_tests.nrows):
-        row = upsit_tests.row_values(row_num)
-        
-        case_id = row[hd['CaseID']]
-        if case_id not in subjects:
-            subject = Subject(case_id)
-            # Age is reported as an integer.  
-            subject.expired_age = int(row[hd['expired_age']])
-            # Gender is reported as 1 or 2.  
-            subject.gender = row[hd['tbl_donors.gender']]
-            subjects[case_id] = subject
-        
-        test_date = row[hd['smell_test_date']]
-        test_date = datetime(1900,1,1) + timedelta(int(test_date)-2)
+    pd_sheet = disease_wb.sheet_by_name('"pure"PDonly1test')
+    pd_subjects,pd_tests = parse_tests(pd_sheet,question_set,'pd')
 
-        responses = {}
-        for q in range(1,41):
-            choice_num = row[hd['smell_%d' % q]] 
-            if type(choice_num) is float:
-                choice_num = int(choice_num)-1 # Change to 0-indexed.  
-            else:
-                choice_num = None
-            responses[q] = Response(questions[q],choice_num)
-        
-        test = Test(subjects[case_id],responses.values(),test_date)
-        tests.append(test)        
+    ctrl_sheet = ctrl_wb.sheet_by_name('AllNPcontrolVisits')
+    ctrl_subjects,ctrl_tests = parse_tests(ctrl_sheet,question_set,'ctrl')  
+
+    # Currently not used.  
+    cp = cp_wb.sheets()[0] # Only one sheet.      
     
-    #data = {key:value for key,value in data.items() if 'upsit' in value}
+    subjects = ctrl_subjects.copy()
+    subjects.update(pd_subjects)
+    tests = pd_tests + ctrl_tests
     return subjects,tests
+
+def parse_tests(tests_sheet,question_set,subject_label=None):
+  """Parse a worksheet of tests to return subject and tests.""" 
+
+  subjects = {}
+  tests = []
+  gender = {1:'M',2:'F'}  
+
+  headers = tests_sheet.row_values(0)
+  hd = {key:i for i,key in enumerate(headers)}
+  for row_num in range(1,tests_sheet.nrows):
+      row = tests_sheet.row_values(row_num)
+      
+      case_id = row[hd['CaseID']]
+      if case_id not in subjects:
+          subject = Subject(case_id)
+          # Age is reported as an integer or as 100+.   
+          expired_age = row[hd['expired_age']]
+          subject.expired_age = 100 if expired_age=='100+' else int(expired_age)
+          # Gender is reported as 1 or 2.  
+          subject.gender = row[hd['tbl_donors.gender']]
+          if subject_label is not None:
+            subject.label = subject_label
+          subjects[case_id] = subject
+      
+      test_date = row[hd['smell_test_date']]
+      test_date = datetime(1900,1,1) + timedelta(int(test_date)-2)
+
+      responses = {}
+      for q in range(1,41):
+          choice_num = row[hd['smell_%d' % q]] 
+          if type(choice_num) is float:
+              choice_num = int(choice_num)-1 # Change to 0-indexed.  
+          else:
+              choice_num = None
+          responses[q] = Response(question_set.questions[q],choice_num)
+      
+      response_set = ResponseSet(responses,indices=responses.keys())
+      test = Test(subjects[case_id],response_set,test_date)
+      tests.append(test)    
+
+  return subjects,tests

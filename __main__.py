@@ -5,14 +5,29 @@ import ppmi
 import bbdp
 
 if __name__ == '__main__':
-    """PDBP data"""
+    """PPMI data"""
+    '''
     ppmi_data = ppmi.load()
-    subjects,tests = bbdp.load()
-    #pprint(upsit_key)
-    #pprint(bbdp_data)
-    '''pdbp.plot_cumul_hist(pdbp_data,booklet=1)
-    pdbp.plot_cumul_hist(pdbp_data,booklet=2)
-    pdbp.plot_cumul_hist(pdbp_data,booklet=3)
-    pdbp.plot_cumul_hist(pdbp_data,booklet=4)
+    ppmi.plot_cumul_hist(ppmi_data,booklet=1)
+    ppmi.plot_cumul_hist(ppmi_data,booklet=2)
+    ppmi.plot_cumul_hist(ppmi_data,booklet=3)
+    ppmi.plot_cumul_hist(ppmi_data,booklet=4)
     upsit.plt.show()
     '''
+    
+    """BBDP data"""
+    subjects,tests = bbdp.load()
+    ctrl = []; pd = []
+    
+    for test in tests:
+    	if test.subject.label == 'ctrl':
+    		ctrl.append(test.score)
+    	if test.subject.label == 'pd':
+    		pd.append(test.score)
+    
+    #pprint(upsit_key)
+    #pprint(bbdp_data)
+    #upsit.cumul_hist(ctrl,color='k')
+    #upsit.cumul_hist(pd,color='r')
+    #upsit.plt.show()
+    

@@ -1,5 +1,4 @@
 import csv
-from types import NoneType
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -38,14 +37,12 @@ class Question(object):
     One question on an UPSIT test.  
     """
 
-    def __init__(self, num, ordered_choices, correct_index):
+    def __init__(self, ordered_choices, correct_index):
         """
-        num: question number in a test booklet.  
         ordered_choices: list with 4 strings.  
         correct_index: index in that list of the correct answer. 
         """ 
         
-        self.num = num
         self.choices = ordered_choices
         self.correct_index = correct_index
         self.correct = self.choices[correct_index]
@@ -55,8 +52,10 @@ class QuestionSet(object):
     A ordered set of questions (i.e. a complete, unanswered test).
     """
 
-    def __init__(self,questions):
-        self.questions = questions
+    def __init__(self,questions,indices=None):
+        if indices is None:
+            indices = range(1,len(questions)+1)
+        self.questions = {indices[i]:questions[i] for i in range(len(questions))}
 
 class Response(object):
     """
@@ -70,7 +69,7 @@ class Response(object):
         """
 
         self.question = question
-        if type(choice) is NoneType:
+        if choice is None:
             self.choice = choice
             self.choice_num = None
         elif type(choice) is str:
@@ -90,18 +89,30 @@ class Response(object):
     def blank(self):
         return self.choice is None
 
+class ResponseSet(object):
+    """
+    A ordered set of responses (i.e. an attempted, partly or fully answered test).
+    """
+
+    def __init__(self,responses,indices=None):
+        if indices is None:
+            indices = range(1,len(responses)+1)
+        if type(responses) is dict:
+            indices,responses = zip(*responses.items())
+        self.responses = {indices[i]:responses[i] for i in range(len(responses))}
+
 class Test(object):
     """
     An ordered set of responses (i.e. a complete, answered test).
     """
     
-    def __init__(self,subject,responses,date):
+    def __init__(self,subject,response_set,date):
         self.subject = subject
-        self.responses = responses
+        self.response_set = response_set
         self.date = date # Date of test as a datetime.datetime
 
     @property
     def score(self):
-        return sum(x.correct for x in self.responses)
+        return sum(x.correct for x in self.response_set.responses.values())
 
     
