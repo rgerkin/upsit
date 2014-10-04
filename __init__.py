@@ -111,6 +111,9 @@ class Test(object):
         self.response_set = response_set
         self.date = date # Date of test as a datetime.datetime
 
+    def is_control(self):
+        return self.subject.label == 'ctrl'
+
     @property
     def score(self):
         return sum(x.correct for x in self.response_set.responses.values())
