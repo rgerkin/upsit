@@ -65,7 +65,7 @@ class Response(object):
     def __init__(self,question,choice):
         """
         question: The question
-        response: The index of the response in question.choices, or None.  
+        choice: The index of the response in question.choices, or None.  
         """
 
         self.question = question

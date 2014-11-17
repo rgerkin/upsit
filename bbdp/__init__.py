@@ -1,9 +1,10 @@
 import os
 from datetime import datetime,timedelta
 
+import numpy as np
 import xlrd
 
-from upsit import Subject,Question,Response,QuestionSet,ResponseSet,Test
+from upsit import Subject,Question,Response,QuestionSet,ResponseSet,Test,plt
 
 def load():
     """Load Banner Brain and Body Donation Project data."""  
@@ -82,3 +83,51 @@ def parse_tests(tests_sheet,question_set,subject_label=None):
       tests.append(test)    
 
   return subjects,tests
+
+def correct_matrix(tests, kind=None):
+    correct = {}
+    for test in tests:
+        if (kind is None) or (test.subject.label == kind):
+            correct[test.subject.case_id]= [int(test.response_set.responses[i].correct) \
+                                    for i in range(1,41)]
+            print test.subject.case_id,test.response_set.responses[35].correct
+    
+    return np.array(correct.values())
+
+def correct_corrs(tests, kind=None):
+    matrix = correct_matrix(tests, kind=kind)
+    for test in tests:
+        if (test.subject.label is None) or (test.subject.label == kind):
+            correct[test.subject]= [int(test.response_set.responses[i].correct) \
+                                    for i in range(1,41)]
+
+    corrs = np.corrcoef(matrix.transpose())
+    
+    plt.figure()
+    plt.pcolor(np.arange(0.5,41.5,1),np.arange(0.5,41.5,1),corrs,cmap='RdBu_r',vmin=-1,vmax=1)
+    plt.colorbar()
+    plt.xlim(0.5,40.5)
+    plt.ylim(0.5,40.5)
+
+    return corrs
+
+def factor_analysis(tests):
+    from sklearn.decomposition import FactorAnalysis
+    from sklearn.cross_validation import cross_val_score
+    
+    matrix = correct_matrix(tests,kind='ctrl')
+    print matrix.shape
+    # matrix must have a number of rows divisible by 3.  
+    # if it does not, eliminate some rows, or pass cv=a to cross_val_score,
+    # where 'a' is a number by which the number of rows is divisible.  
+    fa = FactorAnalysis()
+    fa_scores = []
+    n_components = np.arange(1,41)
+    for n in n_components:
+        fa.n_components = n
+        fa_scores.append(np.mean(cross_val_score(fa, matrix)))
+
+    plt.plot(n_components,fa_scores)
+    
+    return n_components,fa_scores
+    
