@@ -1,8 +1,15 @@
 import os
+import sys
 from datetime import datetime,timedelta
 
 import numpy as np
 import xlrd
+
+filepath = os.path.abspath(__file__)
+dirpath = filepath
+for i in range(3):  
+  dirpath = os.path.dirname(dirpath)
+  sys.path.append(dirpath)
 
 from upsit import Subject,Question,Response,QuestionSet,ResponseSet,Test,plt
 
@@ -64,8 +71,9 @@ def parse_tests(tests_sheet,question_set,subject_label=None):
           subject.gender = row[hd['tbl_donors.gender']]
           if subject_label is not None:
             subject.label = subject_label
+          subject.demented = row[hd['dementia_nos']] in [1,'yes']
           subjects[case_id] = subject
-      
+          
       test_date = row[hd['smell_test_date']]
       test_date = datetime(1900,1,1) + timedelta(int(test_date)-2)
 
@@ -90,7 +98,7 @@ def correct_matrix(tests, kind=None):
         if (kind is None) or (test.subject.label == kind):
             correct[test.subject.case_id]= [int(test.response_set.responses[i].correct) \
                                     for i in range(1,41)]
-            print test.subject.case_id,test.response_set.responses[35].correct
+            print(test.subject.case_id,test.response_set.responses[35].correct)
     
     return np.array(correct.values())
 
@@ -116,7 +124,7 @@ def factor_analysis(tests):
     from sklearn.cross_validation import cross_val_score
     
     matrix = correct_matrix(tests,kind='ctrl')
-    print matrix.shape
+    print(matrix.shape)
     # matrix must have a number of rows divisible by 3.  
     # if it does not, eliminate some rows, or pass cv=a to cross_val_score,
     # where 'a' is a number by which the number of rows is divisible.  
