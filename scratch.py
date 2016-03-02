@@ -1,3 +1,6 @@
+import nbformat
+from IPython.display import Image,display,HTML
+
 import numpy as np
 import pandas
 from sklearn.naive_bayes import MultinomialNB, BernoulliNB
@@ -9,16 +12,33 @@ from sklearn.multiclass import OneVsRestClassifier,OneVsOneClassifier,OutputCode
 from sklearn.preprocessing import MultiLabelBinarizer,Imputer
 from fancyimpute import BiScaler, KNN, NuclearNormMinimization, SoftImpute
 import seaborn as sns
+import bs4
 
 import bbdp
 from upsit import plt
 
 
-def ROC(n_ctrl,means):
-    n_subjects = means['r_subject'].shape[0]
-    n_pd = n_subjects - n_ctrl
-    for i in range(n_subjects):
-        pass
+def get_outputs(nb_name, n_cell):
+    with open('%s.ipynb' % nb_name,'r') as f:
+        nb = nbformat.read(f, as_version=4)
+    outputs = []
+    result = None
+    for c in nb.cells:
+        if c['cell_type']=='code' and c['execution_count']==n_cell:
+            outputs += c['outputs']
+    return outputs
+
+
+def get_fig(nb_name, n_cell, n_output=0):
+    outputs = get_outputs(nb_name,n_cell)
+    base64 = outputs[n_output]['data']['image/png']
+    return Image(data=base64, format='png')
+
+
+def get_table(nb_name, n_cell, n_output=0):
+    outputs = get_outputs(nb_name,n_cell)
+    html = outputs[n_output]['data']['text/html']
+    return HTML(html)
 
 
 def get_response_matrix(kind, options=['responses'], exclude_subjects={}):
@@ -126,8 +146,8 @@ def plot_total_correct_cumul(X_total_correct,ctrl):
     plt.legend(loc=2)
 
 
-def cross_validate(mnb,X,Y,loo,kind):
-    mean = cross_val_score(mnb,X,Y,cv=loo).mean()
+def cross_validate(clf,X,Y,cv,kind):
+    mean = cross_val_score(clf,X,Y,cv=cv).mean()
     print("Cross-validation accuracy for %s is %.3f" % (kind,mean))
 
 
@@ -151,27 +171,29 @@ def plot_roc_curve(Y,p_parks_tc,p_parks_r):
     plt.plot(fpr_tc, tpr_tc, lw=2, color='gray', label='AUC using Total Correct = %0.2f' % (roc_auc_tc))
     #plot(fpr_r_bnb, tpr_r_bnb, lw=2, color='r', label='Responses area = %0.2f' % (roc_auc_r_bnb))
     plt.plot(fpr_r_mnb, tpr_r_mnb, lw=2, color='g', label='AUC using individual responses = %0.2f' % (roc_auc_r_mnb))
-    plt.xlabel('False Positive Rate', fontsize='large', fontweight='bold')
-    plt.ylabel('True Positive Rate', fontsize='large', fontweight='bold')
-    plt.title('ROC curves', fontsize='large', fontweight='bold')
-    plt.xticks(fontsize='large', fontweight='bold')
-    plt.yticks(fontsize='large', fontweight='bold')
+    plt.xlabel('False Positive Rate')#, fontsize='large', fontweight='bold')
+    plt.ylabel('True Positive Rate')#, fontsize='large', fontweight='bold')
+    plt.title('ROC curves')#, fontsize='large', fontweight='bold')
+    plt.xticks()#fontsize='large', fontweight='bold')
+    plt.yticks()#fontsize='large', fontweight='bold')
     plt.legend(loc="lower right")
 
 
-def plot_roc_curves(Y,p,ax=None):
+def plot_roc_curves(Y,p,ax=None,label='full',title='ROC Curves'):
     if ax is None:
         fig,ax = plt.subplots(1,1)
     colors = {'basic':'gray','total':'pink','all':'red'}
     for key in p:
         fpr,tpr,auc = get_roc_curve(Y[key],p[key])
         color = 'red' if key not in colors else colors[key]
-        ax.plot(fpr, tpr, lw=2, color=color, label='AUC using\n%s = %0.2f' % (key,auc))
+        ax.plot(fpr, tpr, lw=2, color=color, 
+                label={'full':'AUC using\n%s = %0.2f' % (key,auc),
+                       'sparse':key}[label])
     ax.set_xlim(-0.01,1.01)
     ax.set_ylim(-0.01,1.01)
     ax.set_xlabel('False Positive Rate')#, fontsize='large', fontweight='bold')
     ax.set_ylabel('True Positive Rate')#, fontsize='large', fontweight='bold')
-    ax.set_title('ROC curves')#, fontsize='large', fontweight='bold')
+    ax.set_title(title)#, fontsize='large', fontweight='bold')
     # Set the tick labels font
     for label in (ax.get_xticklabels() + ax.get_yticklabels()):
         pass
@@ -206,7 +228,7 @@ def roc_data(X,Y,clf,n_iter=50,test_size=0.1):
 
 
 def violin_roc(data):
-    plt.figure(figsize=(15, 10))
+    plt.figure(figsize=(15, 15))
     sns.set_context("notebook", font_scale=2.5, 
                     rc={"lines.linewidth": 1.5, 'legend.fontsize': 20})
     sns.violinplot(x='Predicted Probability', y='Diagnosis', hue='Outcome', 
@@ -222,26 +244,36 @@ def violin_roc(data):
     sns.despine(left=True)
 
 
-def plot_roc_curves_with_ps(Y,Y_cv,Xs,p0,p1,p,pathological):
-    fig,ax = plt.subplots(Y.shape[1],4)
-    sns.set_context("notebook", font_scale=1, rc={"lines.linewidth": 1.5, 'legend.fontsize': 12})
-    fig.set_size_inches(15,30)
-    for i in range(Y.shape[1]):
+def plot_roc_curves_with_ps(Y,Y_cv,Xs,p0,p1,p,pathological,diagnoses=None):
+    if diagnoses is None:
+        diagnoses = pathological.columns.values
+    fig,ax = plt.subplots(len(diagnoses),4)
+    sns.set_context("notebook", font_scale=1, 
+                    rc={"lines.linewidth": 1.5, 
+                    'legend.fontsize': 12})
+    fig.set_size_inches(15,2*len(diagnoses))
+    for i in range(len(diagnoses)):
+        diagnosis = diagnoses[i]
+        ix = list(pathological.columns.values).index(diagnosis)
+        if diagnoses is not None and diagnosis not in diagnoses:
+            continue
         for j,key in enumerate(['basic','total','all']):
             X = Xs[key]
-            if len(p1[key][i]) and len(p0[key][i]):
-                ax[i,j].hist(p1[key][i],bins=1000,range=(0,1),color='r',normed=True,cumulative=True,histtype='step')
-                ax[i,j].hist(p0[key][i],bins=1000,range=(0,1),color='k',normed=True,cumulative=True,histtype='step')
-                ax[i,j].set_title(pathological.columns.values[i])
+            if len(p1[key][ix]) and len(p0[key][ix]):
+                ax[i,j].hist(p1[key][ix],bins=1000,range=(0,1),color='r',
+                             normed=True,cumulative=True,histtype='step')
+                ax[i,j].hist(p0[key][ix],bins=1000,range=(0,1),color='k',
+                             normed=True,cumulative=True,histtype='step')
+                ax[i,j].set_title(diagnosis)
             if i==ax.shape[0]-1:
                 ax[i,j].set_xlabel('Predicted p(pathology)')
             if j==0:
                 ax[i,j].set_ylabel('Cumulative fraction')
             ax[i,j].set_xlim(0,1)
             ax[i,j].set_ylim(0,1)
-        plot_roc_curves({key:Y_cv[key][i] for key in Y_cv},
-                        {key:p[key][i] for key in p},
-                        ax=ax[i,3])
+        plot_roc_curves({key:Y_cv[key][ix] for key in Y_cv},
+                        {key:p[key][ix] for key in p},
+                        ax=ax[i,3],label='sparse')
 
     fig.tight_layout()
 
@@ -267,14 +299,14 @@ def plot_just_rocs(Y_clean,ps,ys,imps):
     plt.tight_layout()
 
 
-def report(rs,Y_clean,imps):
+def report(rs,props,imps):
     n_props = list(rs.values())[0].shape[0]
+    assert n_props == len(props)
     n_splits = list(rs.values())[0].shape[1]
-    for prop in range(n_props):
-        prop_name = list(Y_clean)[prop]
+    for i,prop in enumerate(props):
         for imp in imps:
-            vals = rs[imp][prop,:]
-            print('%s,%s: %.3f +/- %.3f' % (imp,prop_name,vals.mean(),vals.std()/np.sqrt(n_splits)))
+            vals = rs[imp][i,:]
+            print('%s,%s: %.3f +/- %.3f' % (imp,prop,vals.mean(),vals.std()/np.sqrt(n_splits)))
 
 
 def build_p_frame(p0,p1,pathological,guide):
@@ -339,13 +371,33 @@ def imputation(clean,imps=['knn','nmm','softimpute','biscaler']):
     return X
 
 
-def display_importances(X_clean,Y_clean,feature_importances):
-    df_importances = pandas.DataFrame(columns=list(Y_clean))
+def display_importances(X_clean,Y_clean,feature_importances,style=''):
+    diagnoses = [x.replace('Clinpath','').replace('Nos','NOS') \
+                 for x in list(Y_clean)]
+    df_importances = pandas.DataFrame(columns=diagnoses)
     f_importance_means = feature_importances['knn'].mean(axis=2)
-    for i,diagnosis in enumerate(list(Y_clean)):
-        f_d_importance_means = [(feature,f_importance_means[i,j].round(3)) for j,feature in enumerate(list(X_clean))]
+    n_features = f_importance_means.shape[1]
+    for i,diagnosis in enumerate(diagnoses):
+        f_d_importance_means = [(feature[:20],f_importance_means[i,j].round(3)) for j,feature in enumerate(list(X_clean))]
         df_importances[diagnosis] = sorted(f_d_importance_means,key=lambda x:x[1],reverse=True)
-    return df_importances.head(10)
+    index = pandas.Index(range(1,n_features+1))
+    df_importances.set_index(index,inplace=True)
+    html = df_importances.head(10).to_html()
+    bs = bs4.BeautifulSoup(html)
+    for i,th in enumerate(bs.findAll('th')):
+        th['width'] = '50px'
+    for i,td in enumerate(bs.findAll('td')):
+        feature,value = td.text.split(',')
+        value = float(value.replace(')',''))
+        feature = feature.replace('(','')
+        size = 9+3*(value-0.02)/0.1
+        td.string = feature.lower()
+        td['style'] = 'font-size:%dpx;' % size
+        if any([key in td.text for key in ['smell','upsit']]):
+            td['style'] += 'color:rgb(255,0,0);'
+    html = bs.html 
+    #print(html)
+    return HTML('<span style="%s">%s</span>' % (style,html))
 
 
 def classify(n_ctrl,data,alpha=1.0):
