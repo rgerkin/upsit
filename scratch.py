@@ -4,11 +4,13 @@ from IPython.display import Image,display,HTML
 import numpy as np
 import pandas
 from sklearn.naive_bayes import MultinomialNB, BernoulliNB
-from sklearn.cross_validation import cross_val_score,LeaveOneOut,ShuffleSplit
+from sklearn.cross_validation import cross_val_score,LeaveOneOut,\
+                                     ShuffleSplit,LabelShuffleSplit
 from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.preprocessing import scale
 from sklearn.ensemble import RandomForestRegressor,RandomForestClassifier
-from sklearn.multiclass import OneVsRestClassifier,OneVsOneClassifier,OutputCodeClassifier
+from sklearn.multiclass import OneVsRestClassifier,OneVsOneClassifier,\
+                               OutputCodeClassifier
 from sklearn.preprocessing import MultiLabelBinarizer,Imputer
 from fancyimpute import BiScaler, KNN, NuclearNormMinimization, SoftImpute
 import seaborn as sns
@@ -16,30 +18,6 @@ import bs4
 
 import bbdp
 from upsit import plt
-
-
-def get_outputs(nb_name, n_cell):
-    with open('%s.ipynb' % nb_name,'r') as f:
-        nb = nbformat.read(f, as_version=4)
-    outputs = []
-    result = None
-    for c in nb.cells:
-        if c['cell_type']=='code' and c['execution_count']==n_cell:
-            outputs += c['outputs']
-    return outputs
-
-
-def get_fig(nb_name, n_cell, n_output=0):
-    outputs = get_outputs(nb_name,n_cell)
-    base64 = outputs[n_output]['data']['image/png']
-    return Image(data=base64, format='png')
-
-
-def get_table(nb_name, n_cell, n_output=0):
-    outputs = get_outputs(nb_name,n_cell)
-    html = outputs[n_output]['data']['text/html']
-    return HTML(html)
-
 
 def get_response_matrix(kind, options=['responses'], exclude_subjects={}):
     responses = {}
@@ -289,8 +267,8 @@ def plot_just_rocs(Y_clean,ps,ys,imps):
             yimp = ys[imp][i,:,:].ravel() # Unravel all test data ground truth over all cv splits.  
             pimp = pimp[np.isnan(yimp)==0] # Remove NaNs (no ground truth)
             yimp = yimp[np.isnan(yimp)==0] # Remove NaNs (no ground truth)
-            p[imp] = pimp.copy()
-            y[imp] = yimp.copy()
+            p[imp] = pimp[yimp.mask==False]#.compressed()
+            y[imp] = yimp[yimp.mask==False]#.compressed()
         plot_roc_curves(y,p,ax=ax) # Plot on the given axes.  
         ax.set_title(list(Y_clean)[i]) # Set the title.  
     for i in range(i+1,len(axes.flat)):
@@ -324,14 +302,23 @@ def build_p_frame(p0,p1,pathological,guide):
     return ps
 
 
-def fit_models(imps,X,Y,Y_clean,n_estimators=25,n_splits=5):
+def fit_models(imps, X, Y, Y_clean, 
+               labels=None, n_estimators=25, n_splits=5,):
     n_obs = X['missing'].shape[0] # Number of observations.  
     n_features = X['missing'].shape[1] # Number of observations.  
     n_props = Y['missing'].shape[1] # Number of properties to predict.  
-    shuffle_split = ShuffleSplit(n_obs,n_iter=n_splits,test_size=0.2,random_state=0)
+    test_size = 0.2
+    if labels is None:
+        shuffle_split = ShuffleSplit(n_obs,n_iter=n_splits,
+                                     test_size=test_size,random_state=0)
+    else:
+        shuffle_split = LabelShuffleSplit(labels,n_iter=n_splits,
+                                          test_size=test_size,random_state=0)
+    n_test_samples = np.max([len(list(shuffle_split)[i][1]) \
+                            for i in range(n_splits)])
     rs = {imp:np.ma.zeros((n_props,n_splits)) for imp in imps}
-    ps = {imp:np.zeros((n_props,n_splits,176)) for imp in imps}
-    ys = {imp:np.zeros((n_props,n_splits,176)) for imp in imps}
+    ps = {imp:np.ma.masked_all((n_props,n_splits,n_test_samples)) for imp in imps}
+    ys = {imp:np.ma.masked_all((n_props,n_splits,n_test_samples)) for imp in imps}
     feature_importances = {imp:np.ma.zeros((n_props,n_features,n_splits)) for imp in imps}
     for prop in range(n_props):
         print("Fitting model for %s..." % list(Y_clean)[prop])
@@ -346,10 +333,12 @@ def fit_models(imps,X,Y,Y_clean,n_estimators=25,n_splits=5):
                 Y_predict = rfc.predict(X_test)#.reshape(-1,n_props)
                 probs = rfc.predict_proba(X_test)
                 if probs.shape[1]<2 and probs.mean()==1.0:
-                    ps[imp][prop,i,:] = 0.0
+                    n_test_samples = len(probs)
+                    ps[imp][prop,i,:n_test_samples] = 0.0
                 else:
-                    ps[imp][prop,i,:] = probs[:,1]
-                ys[imp][prop,i,:] = Y_test
+                    n_test_samples = len(probs[:,1])
+                    ps[imp][prop,i,:n_test_samples] = probs[:,1]
+                ys[imp][prop,i,:n_test_samples] = Y_test
                 rs[imp][prop,i] = np.ma.corrcoef(Y_predict,Y_test)[0,1]
                 feature_importances[imp][prop,:,i] = rfc.feature_importances_
     return rs,feature_importances,ys,ps
