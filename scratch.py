@@ -2,6 +2,10 @@ import nbformat
 from IPython.display import Image,display,HTML
 
 import numpy as np
+from scipy.special import beta as betaf 
+from scipy.stats import norm,beta
+from scipy.optimize import minimize
+
 import pandas
 from sklearn.naive_bayes import MultinomialNB, BernoulliNB
 from sklearn.cross_validation import cross_val_score,LeaveOneOut,\
@@ -12,7 +16,7 @@ from sklearn.ensemble import RandomForestRegressor,RandomForestClassifier
 from sklearn.multiclass import OneVsRestClassifier,OneVsOneClassifier,\
                                OutputCodeClassifier
 from sklearn.preprocessing import MultiLabelBinarizer,Imputer
-from fancyimpute import BiScaler, KNN, NuclearNormMinimization, SoftImpute
+#from fancyimpute import BiScaler, KNN, NuclearNormMinimization, SoftImpute
 import seaborn as sns
 import bs4
 
@@ -54,8 +58,11 @@ def get_response_matrix(kind, options=['responses'], exclude_subjects={}):
             x += [sum([int(test.response_set.responses[q].choice_num is not None) for q in question_nums])]
         if 'gender' in options:
             x += [test.subject.gender]
-        if 'dementia' in options:
-            x += [test.subject.dementia]
+        if 'demented' in options:
+            try:
+                x += [test.subject.demented]
+            except:
+                x += [test.subject.dementia]
         if 'expired_age' in options:
             x += [test.subject.expired_age]
         responses[test.subject] = x
@@ -114,12 +121,12 @@ def summarize(X_responses,ctrl):
                                                                             np.sum(ctrl)))
 
 
-def plot_total_correct_cumul(X_total_correct,ctrl):
-    X_ctrl = X_total_correct[ctrl == True,0]
-    X_pd = X_total_correct[ctrl == False,0]
-    plt.plot(sorted(X_ctrl),np.linspace(0,1,len(X_ctrl)),'k',label='Control')
-    plt.plot(sorted(X_pd),np.linspace(0,1,len(X_pd)),'r',label='PD')
-    plt.xlabel('Total Correct')
+def plot_cumul(X,Y,label):
+    X_pos = X[Y == True,0]
+    X_neg = X[Y == False,0]
+    plt.plot(sorted(X_neg),np.linspace(0,1,len(X_neg)),'k',label='-')
+    plt.plot(sorted(X_pos),np.linspace(0,1,len(X_pos)),'r',label='+')
+    plt.xlabel(label)
     plt.ylabel('Cumulative Probability')
     plt.legend(loc=2)
 
@@ -129,44 +136,140 @@ def cross_validate(clf,X,Y,cv,kind):
     print("Cross-validation accuracy for %s is %.3f" % (kind,mean))
 
 
-def get_p_parks(mnb,loo,X,Y):
-    p_parks = []
-    for i, (train, test) in enumerate(loo):
-        mnb.fit(X[train], Y[train])
-        p_parks.append(mnb.predict_proba(X[test])[:,1][0])
-    return p_parks
+def get_ps(clf,splits,X,Y):
+    ps = []
+    ys = []
+    for i, (train, test) in enumerate(splits):
+        clf.fit(X[train,:], Y[train])
+        ps += list(clf.predict_proba(X[test,:])[:,1])
+        ys += list(Y[test])
+    return np.array(ps),np.array(ys)
 
 
-def get_roc_curve(Y,p):
-    fpr, tpr, thresholds = roc_curve(Y, p)
+def get_roc_curve(Y,p,smooth=False):
+    if not smooth:
+        fpr, tpr, thresholds = roc_curve(Y, p)
+    else:
+        from scipy.stats import gaussian_kde
+        x = -norm.isf(np.array(p))
+        x0 = x[Y==0]
+        x1 = x[Y==1]
+        threshold = np.linspace(-10,10,201)
+        fpr = [gaussian_kde(x0,0.2).integrate_box(t,np.inf) for t in threshold]
+        tpr = [gaussian_kde(x1,0.2).integrate_box(t,np.inf) for t in threshold]
     roc_auc = auc(fpr, tpr)
+    if roc_auc < 0.5:
+        fpr = 1-np.array(fpr)
+        tpr = 1-np.array(tpr)
+        roc_auc = 1-roc_auc
     return fpr,tpr,roc_auc
 
 
-def plot_roc_curve(Y,p_parks_tc,p_parks_r):
-    fpr_tc,tpr_tc,roc_auc_tc = get_roc_curve(Y,p_parks_tc)
-    fpr_r_mnb,tpr_r_mnb,roc_auc_r_mnb = get_roc_curve(Y,p_parks_r)
-    plt.plot(fpr_tc, tpr_tc, lw=2, color='gray', label='AUC using Total Correct = %0.2f' % (roc_auc_tc))
-    #plot(fpr_r_bnb, tpr_r_bnb, lw=2, color='r', label='Responses area = %0.2f' % (roc_auc_r_bnb))
-    plt.plot(fpr_r_mnb, tpr_r_mnb, lw=2, color='g', label='AUC using individual responses = %0.2f' % (roc_auc_r_mnb))
+def binormal_roc(Y,p):
+    x = -norm.isf(np.array(p))
+    mu0 = x[Y==0].mean()
+    sigma0 = x[Y==0].std()
+    mu1 = x[Y==1].mean()
+    sigma1 = x[Y==1].std()
+    # Separation
+    a = (mu1-mu0)/sigma1
+    # Symmetry
+    b = sigma0/sigma1
+    threshold = np.linspace(0,1,1000)
+    roc = norm.cdf(a-b*norm.isf(threshold))
+    return threshold,roc
+
+
+def bibeta_roc(Y,p):
+    def logL(ab):
+        a0,b0,a1,b1 = ab
+        LL = beta.logpdf(p[Y==0],a0,b0).sum() + beta.logpdf(p[Y==1],a1,b1).sum() 
+        return -LL
+    result = minimize(logL,[1,3,3,1],bounds=[(1e-7,None)]*4)
+    a0,b0,a1,b1 = result.x
+    threshold = np.linspace(0,1,1000)
+    fpr = 1-beta.cdf(threshold,a0,b0)
+    tpr = 1-beta.cdf(threshold,a1,b1)
+    return threshold,fpr,tpr
+
+
+def rgb2hex(r,g,b):
+    return "#%0.2x%0.2x%0.2x" % (r,g,b)
+
+
+def get_colors(i):
+    black = rgb2hex(0, 0, 0)
+    blue = rgb2hex(0, 0, 255)
+    red = rgb2hex(255, 0, 0)
+    green = rgb2hex(0, 255, 0)
+    magenta = rgb2hex(255, 0, 255)
+    brown = rgb2hex(128, 0, 0)
+    yellow = rgb2hex(255, 255, 0)
+    pink = rgb2hex(255, 128, 128)
+    gray = rgb2hex(128, 128, 128)
+    orange = rgb2hex(255, 128, 0)
+
+    colors = [black,blue,red,green,magenta,brown,yellow,pink,gray,orange]
+    return colors[i % len(colors)]
+
+
+def plot_roc_curve(Y,n0=None,n1=None,smooth=False,**ps):
+    aucs = []
+    aucs_se = []
+    if n0 is None:
+        n0 = sum(Y==0)
+    if n1 is None:
+        n1 = sum(Y>0)
+    for i,(title,p) in enumerate(sorted(ps.items())):
+        fpr,tpr,auc = get_roc_curve(Y,p,smooth=smooth)
+        aucs.append(auc)
+        # Confidence Intervals for the Area under the ROC Curve
+        # Cortes and Mohri
+        # http://www.cs.nyu.edu/~mohri/pub/area.pdf
+        m = n1
+        n = n0
+        A = auc
+        Pxxy = 0
+        Pxyy = 0
+        iters = 10000
+        for j in range(iters):
+            index = np.arange(len(Y))
+            np.random.shuffle(index)
+            p_shuff = p[index]
+            Y_shuff = Y[index]
+            pa,pb = p_shuff[Y_shuff>0][0:2]
+            na,nb = p_shuff[Y_shuff==0][0:2]
+            Pxxy += ((pa>na) and (pb>na))
+            Pxyy += ((na<pa) and (nb<pa))
+        Pxxy/=iters
+        Pxyy/=iters
+        print(A,Pxxy,Pxyy,m,n)
+        sd = (A*(1-A)+(m-1)*(Pxxy-(A**2))+(n-1)*(Pxyy-(A**2)))/(m*n)
+        se = np.sqrt(sd)
+        aucs_se.append(se)
+        plt.plot(fpr, tpr, lw=2, color=get_colors(i), label='%s = %0.2f' % (title,auc))
     plt.xlabel('False Positive Rate')#, fontsize='large', fontweight='bold')
     plt.ylabel('True Positive Rate')#, fontsize='large', fontweight='bold')
     plt.title('ROC curves')#, fontsize='large', fontweight='bold')
     plt.xticks()#fontsize='large', fontweight='bold')
     plt.yticks()#fontsize='large', fontweight='bold')
-    plt.legend(loc="lower right")
+    plt.legend(loc="lower right",fontsize=17)
+    return aucs,aucs_se
 
 
-def plot_roc_curves(Y,p,ax=None,label='full',title='ROC Curves'):
+def plot_roc_curves(Y,p,ax=None,label='full',title='AUC',color=None):
     if ax is None:
         fig,ax = plt.subplots(1,1)
     colors = {'basic':'gray','total':'pink','all':'red'}
+    aucs = {}
     for key in p:
         fpr,tpr,auc = get_roc_curve(Y[key],p[key])
-        color = 'red' if key not in colors else colors[key]
+        if color is None:
+            color = 'red' if key not in colors else colors[key]
         ax.plot(fpr, tpr, lw=2, color=color, 
                 label={'full':'AUC using\n%s = %0.2f' % (key,auc),
-                       'sparse':key}[label])
+                       'sparse':'%s = %.2f' % (title,auc)}[label])
+        aucs[key] = auc
     ax.set_xlim(-0.01,1.01)
     ax.set_ylim(-0.01,1.01)
     ax.set_xlabel('False Positive Rate')#, fontsize='large', fontweight='bold')
@@ -178,6 +281,7 @@ def plot_roc_curves(Y,p,ax=None,label='full',title='ROC Curves'):
         #label.set_fontsize('large')
         #label.set_fontweight('bold')
     ax.legend(loc="lower right")
+    return aucs
 
 
 def roc_data(X,Y,clf,n_iter=50,test_size=0.1):
@@ -256,12 +360,21 @@ def plot_roc_curves_with_ps(Y,Y_cv,Xs,p0,p1,p,pathological,diagnoses=None):
     fig.tight_layout()
 
 
-def plot_just_rocs(Y_clean,ps,ys,imps):
-    fig,axes = plt.subplots(4,4,sharex=True,sharey=True,figsize=(10,10))
+def plot_just_rocs(props,ps,ys,imps,plot=True,axes=None,m=None,n=None,color='k',title='AUC'):
+    if plot:
+        if axes is None:
+            if m is None:
+                m = max(1,1+int(len(props)/4))
+            if n is None:
+                n = min(4,len(props))
+            fig,axes = plt.subplots(m,n,sharex=True,sharey=True,
+                                    squeeze=False,figsize=(m*3.5,n*3.5))
     y = {}
     p = {}
-    for i in range(len(list(Y_clean))):
-        ax = axes.flat[i]
+    aucs = {}
+    for i,prop in enumerate(props):
+        if plot:
+            ax = axes.flat[i]
         for imp in imps:
             pimp = ps[imp][i,:,:].ravel() # Unravel all predictions of test data over all cv splits.  
             yimp = ys[imp][i,:,:].ravel() # Unravel all test data ground truth over all cv splits.  
@@ -269,12 +382,22 @@ def plot_just_rocs(Y_clean,ps,ys,imps):
             yimp = yimp[np.isnan(yimp)==0] # Remove NaNs (no ground truth)
             p[imp] = pimp[yimp.mask==False]#.compressed()
             y[imp] = yimp[yimp.mask==False]#.compressed()
-        plot_roc_curves(y,p,ax=ax) # Plot on the given axes.  
-        ax.set_title(list(Y_clean)[i]) # Set the title.  
-    for i in range(i+1,len(axes.flat)):
-        ax = axes.flat[i]
-        ax.set_axis_off()
-    plt.tight_layout()
+        if plot:
+            aucs[prop] = plot_roc_curves(y,p,ax=ax,label='sparse',title=title,color=color) # Plot on the given axes.  
+        else:
+            aucsi = {}
+            for imp in p:
+                fpr,tpr,auc = get_roc_curve(y[imp],p[imp])
+                aucsi[imp] = auc
+            aucs[prop] = aucsi
+        if plot:
+            ax.set_title(props[i].replace('Clinpath ','').replace('Nos','NOS')) # Set the title.  
+    if plot:
+        for i in range(i+1,len(axes.flat)):
+            ax = axes.flat[i]
+            ax.set_axis_off()
+        plt.tight_layout()
+    return aucs,axes
 
 
 def report(rs,props,imps):
@@ -302,11 +425,16 @@ def build_p_frame(p0,p1,pathological,guide):
     return ps
 
 
-def fit_models(imps, X, Y, Y_clean, 
-               labels=None, n_estimators=25, n_splits=5,):
+def fit_models(imps, X, Y, all_props, props=None,
+               labels=None, n_splits=5, 
+               clf_args={'n_estimators':25, 
+                         'max_features':'auto', 
+                         'random_state':0}):
+    if props is None:
+        props = all_props
     n_obs = X['missing'].shape[0] # Number of observations.  
     n_features = X['missing'].shape[1] # Number of observations.  
-    n_props = Y['missing'].shape[1] # Number of properties to predict.  
+    n_props = len(props) # Number of properties to predict.  
     test_size = 0.2
     if labels is None:
         shuffle_split = ShuffleSplit(n_obs,n_iter=n_splits,
@@ -320,13 +448,20 @@ def fit_models(imps, X, Y, Y_clean,
     ps = {imp:np.ma.masked_all((n_props,n_splits,n_test_samples)) for imp in imps}
     ys = {imp:np.ma.masked_all((n_props,n_splits,n_test_samples)) for imp in imps}
     feature_importances = {imp:np.ma.zeros((n_props,n_features,n_splits)) for imp in imps}
-    for prop in range(n_props):
-        print("Fitting model for %s..." % list(Y_clean)[prop])
+    for n_prop,prop in enumerate(props):
+        j = all_props.index(prop)
+        print("Fitting model for %s..." % prop)
         for imp in imps:
-            for i,(train,test) in enumerate(shuffle_split):
+            for k,(train,test) in enumerate(shuffle_split):
                 X_train,X_test = X[imp][train],X[imp][test]
-                Y_train,Y_test = Y[imp][train,prop],Y['missing'][test,prop]
-                rfc = RandomForestClassifier(n_estimators=n_estimators,random_state=0)
+                Y_train,Y_test = Y[imp][train,j],Y['missing'][test,j]
+                clf_args_ = {key:(value if type(value) is not dict \
+                             else value[prop])\
+                             for key,value in clf_args.items()}
+                if clf_args_['max_features'] not in [None, 'auto']:
+                   clf_args_['max_features'] = min(X_train.shape[1],
+                                                   clf_args_['max_features'])
+                rfc = RandomForestClassifier(**clf_args_)
                 #if Y_train.shape[1] == 1:
                 #    Y_train = Y_train.ravel()
                 rfc.fit(X_train,Y_train)
@@ -334,15 +469,119 @@ def fit_models(imps, X, Y, Y_clean,
                 probs = rfc.predict_proba(X_test)
                 if probs.shape[1]<2 and probs.mean()==1.0:
                     n_test_samples = len(probs)
-                    ps[imp][prop,i,:n_test_samples] = 0.0
+                    ps[imp][n_prop,k,:n_test_samples] = 0.0
                 else:
                     n_test_samples = len(probs[:,1])
-                    ps[imp][prop,i,:n_test_samples] = probs[:,1]
-                ys[imp][prop,i,:n_test_samples] = Y_test
-                rs[imp][prop,i] = np.ma.corrcoef(Y_predict,Y_test)[0,1]
-                feature_importances[imp][prop,:,i] = rfc.feature_importances_
+                    ps[imp][n_prop,k,:n_test_samples] = probs[:,1]
+                ys[imp][n_prop,k,:n_test_samples] = Y_test
+                rs[imp][n_prop,k] = np.ma.corrcoef(Y_predict,Y_test)[0,1]
+                feature_importances[imp][n_prop,:,k] = rfc.feature_importances_
     return rs,feature_importances,ys,ps
 
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.multiclass import OneVsRestClassifier
+from sklearn.cross_validation import ShuffleSplit,LabelShuffleSplit
+
+def fit_models_mc(imps, X, Y, all_props, props=None,
+               labels=None, n_splits=5, 
+               clf_args={'n_estimators':25, 
+                         'max_features':'auto', 
+                         'random_state':0}):
+    if props is None:
+        props = all_props
+    n_obs = X['missing'].shape[0] # Number of observations.  
+    n_features = X['missing'].shape[1] # Number of observations.  
+    n_props = len(props) # Number of properties to predict.  
+    test_size = 0.2
+    if labels is None:
+        shuffle_split = ShuffleSplit(n_obs,n_iter=n_splits,
+                                     test_size=test_size,random_state=0)
+    else:
+        shuffle_split = LabelShuffleSplit(labels,n_iter=n_splits,
+                                          test_size=test_size,random_state=0)
+    n_test_samples = np.max([len(list(shuffle_split)[i][1]) \
+                            for i in range(n_splits)])
+    rs = {imp:np.ma.zeros((n_props,n_splits)) for imp in imps}
+    ps = {imp:np.ma.masked_all((n_props,n_splits,n_test_samples)) for imp in imps}
+    ys = {imp:np.ma.masked_all((n_props,n_splits,n_test_samples)) for imp in imps}
+    feature_importances = None#{imp:np.ma.zeros((n_props,n_features,n_splits)) for imp in imps}
+    cols = np.array([i for i in range(len(all_props)) if all_props[i] in props])
+    for imp in imps:
+        for k,(train,test) in enumerate(shuffle_split):
+            #X_train,X_test = X[imp][train][:,cols],X[imp][test][:,cols]
+            #Y_train,Y_test = Y[imp][train][:,cols],Y['missing'][test][:,cols]
+            X_train,X_test = X[imp][train,:],X[imp][test,:]
+            Y_train,Y_test = Y[imp][train,:],Y['missing'][test,:]
+            clf_args_ = {key:(value if type(value) is not dict \
+                         else value[prop])\
+                         for key,value in clf_args.items()}
+            if clf_args_['max_features'] not in [None, 'auto']:
+               clf_args_['max_features'] = min(X_train.shape[1],
+                                               clf_args_['max_features'])
+            rfc = RandomForestClassifier(**clf_args_)
+            onevsrest = OneVsRestClassifier(rfc)
+            onevsrest.fit(X_train,Y_train)
+            Y_predict = onevsrest.predict(X_test)#.reshape(-1,n_props)
+            probs = onevsrest.predict_proba(X_test)
+            if probs.shape[1]<2 and probs.mean()==1.0:
+                n_test_samples = len(probs)
+                ps[imp][:,k,:n_test_samples] = 0.0
+            else:
+                n_test_samples = len(probs[:,1])
+                ps[imp][:,k,:n_test_samples] = probs.T
+            ys[imp][:,k,:n_test_samples] = Y_test.T
+            for i in range(n_props):
+                rs[imp][i,k] = np.ma.corrcoef(Y_predict[:,i],Y_test[:,i])[0,1]
+            #feature_importances[imp][n_prop,:,k] = onevsrest.feature_importances_
+    return rs,feature_importances,ys,ps
+
+
+def scatter_diag(props,ps,os,x_diag,y_diag,plot=True):
+    from matplotlib.colors import Colormap as cmap
+    imp = 'knn'
+    xi = props.index(x_diag)
+    yi = props.index(y_diag)
+    p_x = ps[imp][xi,:,:].ravel() # Unravel all predictions of test data over all cv splits.  
+    p_y = ps[imp][yi,:,:].ravel() # Unravel all test data ground truth over all cv splits.  
+    o_x = os[imp][xi,:,:].ravel() # Unravel all predictions of test data over all cv splits.  
+    o_y = os[imp][yi,:,:].ravel() # Unravel all test data ground truth over all cv splits.  
+    mask = o_x.mask + o_y.mask
+    p_x = p_x[mask==False]
+    p_y = p_y[mask==False]
+    o_x = o_x[mask==False]
+    o_y = o_y[mask==False]
+    colors = np.vstack((o_x.data,np.zeros(len(o_x)),o_y.data)).T
+    colors[colors==0] = 0.2
+    if plot:
+        plt.figure(figsize=(10,10))
+        plt.scatter(p_x+0.02*np.random.rand(p_pd.shape[0]),
+                    p_y+0.02*np.random.rand(p_pd.shape[0]),
+                    s=15,
+                    c=colors)
+        plt.xlabel(x_diag)
+        plt.ylabel(y_diag)
+        plt.xlim(0,p_x.max()*1.05)
+        plt.ylim(0,p_y.max()*1.05)
+        plt.legend()
+    return p_x,p_y,o_x,o_y
+
+
+def roc_showdown(p_x,p_y,o_x,o_y,x_diag,y_diag,title='AUC',color='black'):
+    from sklearn.metrics import roc_curve,auc
+    p = p_x - p_y
+    o = o_x - o_y
+    p = p[np.abs(o)==1] # Only cases where x or y equals 1, but not both.  
+    o = o[np.abs(o)==1]
+    o = o==1
+    fpr,tpr,_ = roc_curve(o, p)
+    plt.plot(fpr,1-tpr,label="%s = %.3f" % (title,auc(fpr,tpr)),c=color)
+    x_diag = x_diag.replace('Clinpath ','').replace('Nos','NOS')
+    y_diag = y_diag.replace('Clinpath ','').replace('Nos','NOS')
+    plt.xlabel('False %s rate' % x_diag)#'Fraction %s misdiagnosed as %s' % (y_diag,x_diag))
+    plt.ylabel('False %s rate' % y_diag)#'Fraction %s misdiagnosed as %s' % (x_diag,y_diag))
+    #plt.legend(loc=1)
+    
 
 def imputation(clean,imps=['knn','nmm','softimpute','biscaler']):
     imputer = Imputer(strategy='median',axis=0)
@@ -360,15 +599,15 @@ def imputation(clean,imps=['knn','nmm','softimpute','biscaler']):
     return X
 
 
-def display_importances(X_clean,Y_clean,feature_importances,style=''):
-    diagnoses = [x.replace('Clinpath','').replace('Nos','NOS') \
-                 for x in list(Y_clean)]
-    df_importances = pandas.DataFrame(columns=diagnoses)
+def display_importances(all_features,props,feature_importances,style=''):
+    props = [x.replace('Clinpath','').replace('Nos','NOS') \
+                 for x in props]
+    df_importances = pandas.DataFrame(columns=props)
     f_importance_means = feature_importances['knn'].mean(axis=2)
     n_features = f_importance_means.shape[1]
-    for i,diagnosis in enumerate(diagnoses):
-        f_d_importance_means = [(feature[:20],f_importance_means[i,j].round(3)) for j,feature in enumerate(list(X_clean))]
-        df_importances[diagnosis] = sorted(f_d_importance_means,key=lambda x:x[1],reverse=True)
+    for i,prop in enumerate(props):
+        f_d_importance_means = [(feature[:20],f_importance_means[i,j].round(3)) for j,feature in enumerate(all_features)]
+        df_importances[prop] = sorted(f_d_importance_means,key=lambda x:x[1],reverse=True)
     index = pandas.Index(range(1,n_features+1))
     df_importances.set_index(index,inplace=True)
     html = df_importances.head(10).to_html()
@@ -380,7 +619,7 @@ def display_importances(X_clean,Y_clean,feature_importances,style=''):
         value = float(value.replace(')',''))
         feature = feature.replace('(','')
         size = 9+3*(value-0.02)/0.1
-        td.string = feature.lower()
+        td.string = feature.lower()#+'(%.3f)'%value
         td['style'] = 'font-size:%dpx;' % size
         if any([key in td.text for key in ['smell','upsit']]):
             td['style'] += 'color:rgb(255,0,0);'
