@@ -1,3 +1,8 @@
+import inspect
+import builtins
+import re
+import time
+
 import nbformat
 from IPython.display import Image,display,HTML
 
@@ -5,11 +10,12 @@ import numpy as np
 from scipy.special import beta as betaf 
 from scipy.stats import norm,beta
 from scipy.optimize import minimize
+import seaborn as sns
 
-import pandas
+import pandas as pd
 from sklearn.naive_bayes import MultinomialNB, BernoulliNB
-from sklearn.cross_validation import cross_val_score,LeaveOneOut,\
-                                     ShuffleSplit,LabelShuffleSplit
+from sklearn.model_selection import cross_val_score,LeaveOneOut,\
+                                     ShuffleSplit,GroupShuffleSplit
 from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.preprocessing import scale
 from sklearn.ensemble import RandomForestRegressor,RandomForestClassifier
@@ -22,6 +28,38 @@ import bs4
 
 import bbdp
 from upsit import plt
+
+SAVE = False
+
+class Prindent:
+    def __init__(self):
+        self.base_depth = len(self.get_stack())
+        x = self.get_stack()
+        #for xi in x:
+        #    builtins.print(xi.filename)
+    def get_stack(self):
+        stack = [x for x in inspect.stack() if not \
+                    any([y in x.filename for y in \
+                        ['zmq','IPy','ipy','tornado','runpy',
+                         'imp.py','importlib','traitlets']])]
+        return stack
+    def print(self,*args,add=0,**kwargs):
+        stack = self.get_stack()
+        #builtins.print(len(stack),self.base_depth)
+        depth = len(stack)-self.base_depth+add
+        args = ["\t"*depth + "%s"%arg for arg in args]
+        #builtins.print(len(inspect.stack()),self.base_depth)
+        builtins.print(*args,**kwargs)
+
+
+print = Prindent().print
+
+
+def save_fig():
+    global SAVE
+    if SAVE:
+        plt.savefig('%s.png' % time.time(), format='png', dpi=600)
+
 
 def get_response_matrix(kind, options=['responses'], exclude_subjects={}):
     responses = {}
@@ -122,12 +160,13 @@ def summarize(X_responses,ctrl):
 
 
 def plot_cumul(X,Y,label):
-    X_pos = X[Y == True,0]
-    X_neg = X[Y == False,0]
+    X_pos = X[Y == True]
+    X_neg = X[Y == False]
     plt.plot(sorted(X_neg),np.linspace(0,1,len(X_neg)),'k',label='-')
     plt.plot(sorted(X_pos),np.linspace(0,1,len(X_pos)),'r',label='+')
     plt.xlabel(label)
     plt.ylabel('Cumulative Probability')
+    plt.ylim(0,1)
     plt.legend(loc=2)
 
 
@@ -136,13 +175,106 @@ def cross_validate(clf,X,Y,cv,kind):
     print("Cross-validation accuracy for %s is %.3f" % (kind,mean))
 
 
-def get_ps(clf,splits,X,Y):
+def makeXY(keys,uses,x,drop_more=[],restrict=[]):
+    X = {key:{} for key in keys}
+    Y = {}
+    for key in keys:
+        pos,neg = [_.strip() for _ in key.split('vs')]
+        if restrict: # Not implmented.  
+            for kind in pos,neg:
+                pass#x[kind].drop(inplace=1)
+        n = len(x[pos])+len(x[neg])
+        #order = np.random.permutation(range(n))
+        for use,regex in uses.items():
+            drop = []
+            for reg in regex:
+                drop += [feature for feature in list(x[pos]) if re.match(reg,feature)]
+            drop = list(set(drop))
+            drop += drop_more
+            x_new = pd.concat([x[_].drop(drop,axis=1) for _ in (pos,neg)])
+            #x_new = normalize(x_new,norm='max',axis=0)
+            #from sklearn.decomposition import PCA,NMF
+            #pca = PCA(n_components = min(10,x_new.shape[1]))
+            #nmf = NMF(n_components = min(5,x_new.shape[1]))
+            #x_new = pca.fit_transform(x_new)
+            #x_new = nmf.fit_transform(x_new)
+            X[key][use] = x_new#[order,:]
+        Y[key] = pd.Series(index=x_new.index,data=np.ones(n))
+        Y[key].loc[x[neg].index] = 0
+    return X,Y
+
+
+def make_py(keys,uses,X,Y,clfs,ignore=None):
+    p_pos = {}
+    ys = {}
+    for key in keys:
+        #print(key)
+        splitter = ShuffleSplit(n_splits=100,test_size=0.2,random_state=0)
+        p_pos[key] = {}
+        for use in uses:
+            #print("\t%s" % use)
+            p_pos[key][use] = {'average':0}
+            #x = 0
+            for clf in clfs:
+                p,ys[key] = get_ps(clf,splitter,X[key][use],Y[key],ignore=ignore); # Extract the probability of PD from each classifier
+                p = p.clip(1e-15,1-1e-15)
+                p_pos[key][use][str(clf)[:7]] = p
+                p_pos[key][use]['average'] += p
+            p_pos[key][use]['average'] /= len(clfs)
+    return p_pos,ys
+
+
+def plot_rocs(keys,uses,p_pos,Y,ys,smooth=True,no_plot=False):
+    sns.set(font_scale=2)
+    aucs = {}
+    aucs_sd = {}
+    for key in keys:
+        if not no_plot:
+            plt.figure()
+        d = {use:p_pos[key][use]['average'] for use in uses}
+        n0 = sum(Y[key]==0)
+        n1 = sum(Y[key]>0)
+        if n0==0 or n1==0:
+            print("Missing either positive or negative examples of %s" % key)
+            continue
+        if ys[key].std()==0:
+            print("Missing either positive or negative bootstrap examples of %s" % key)
+            continue
+        aucs[key],aucs_sd[key] = plot_roc_curve(ys[key],n0=n0,n1=n1,smooth=smooth,no_plot=no_plot,**d)
+        for i,(a1,sd1) in enumerate(zip(aucs[key],aucs_sd[key])):
+            for j,(a2,sd2) in enumerate(zip(aucs[key],aucs_sd[key])):
+                if i>j:
+                    d = np.abs((a1-a2)/np.sqrt((sd1**2 + sd2**2)/2))
+                    p = (1-norm.cdf(d,0,1))/2
+                    print("\t%s vs %s: p=%.4f" % (sorted(uses)[i],sorted(uses)[j],p))
+        if not no_plot:
+            plt.title(keys[key])
+        save_fig()
+    return aucs,aucs_sd
+
+
+def get_ps(clf,splitter,X,Y,ignore=None):
     ps = []
     ys = []
-    for i, (train, test) in enumerate(splits):
-        clf.fit(X[train,:], Y[train])
-        ps += list(clf.predict_proba(X[test,:])[:,1])
-        ys += list(Y[test])
+    assert np.array_equal(X.index,Y.index),"X and Y indices must match"
+    for i, (train, test) in enumerate(splitter.split(Y)):
+        train = X.index[train]
+        test = X.index[test]
+        try:
+            assert Y.loc[train].mean() not in [0.0,1.0], \
+            "Must have both positive and negative examples"
+        except AssertionError as e:
+            print("Skipping split %d because: %s" % (i,e))
+        else:
+            clf.fit(X.loc[train], Y.loc[train])
+            X_test = X.loc[test].drop(ignore,errors='ignore') if ignore else X.loc[test]
+            Y_test = Y.loc[test].drop(ignore,errors='ignore') if ignore else Y.loc[test]
+            n_test_samples = X_test.shape[0]
+            if n_test_samples:
+                ps += list(clf.predict_proba(X_test)[:,1])
+                ys += list(Y_test)
+            else:
+                print("Skipping split %d because there are no test samples" % i)
     return np.array(ps),np.array(ys)
 
 
@@ -213,9 +345,9 @@ def get_colors(i):
     return colors[i % len(colors)]
 
 
-def plot_roc_curve(Y,n0=None,n1=None,smooth=False,**ps):
+def plot_roc_curve(Y,n0=None,n1=None,smooth=False,no_plot=False,**ps):
     aucs = []
-    aucs_se = []
+    aucs_sd = []
     if n0 is None:
         n0 = sum(Y==0)
     if n1 is None:
@@ -243,18 +375,24 @@ def plot_roc_curve(Y,n0=None,n1=None,smooth=False,**ps):
             Pxyy += ((na<pa) and (nb<pa))
         Pxxy/=iters
         Pxyy/=iters
-        print(A,Pxxy,Pxyy,m,n)
-        sd = (A*(1-A)+(m-1)*(Pxxy-(A**2))+(n-1)*(Pxyy-(A**2)))/(m*n)
-        se = np.sqrt(sd)
-        aucs_se.append(se)
-        plt.plot(fpr, tpr, lw=2, color=get_colors(i), label='%s = %0.2f' % (title,auc))
-    plt.xlabel('False Positive Rate')#, fontsize='large', fontweight='bold')
-    plt.ylabel('True Positive Rate')#, fontsize='large', fontweight='bold')
-    plt.title('ROC curves')#, fontsize='large', fontweight='bold')
-    plt.xticks()#fontsize='large', fontweight='bold')
-    plt.yticks()#fontsize='large', fontweight='bold')
-    plt.legend(loc="lower right",fontsize=17)
-    return aucs,aucs_se
+        #print(A,Pxxy,Pxyy,m,n)
+        var = (A*(1-A)+(m-1)*(Pxxy-(A**2))+(n-1)*(Pxyy-(A**2)))/(m*n)
+        sd = np.sqrt(var)
+        aucs_sd.append(sd)
+        if not no_plot:
+            plt.plot(fpr, tpr, lw=2, color=get_colors(i), label='%s = %0.2f' % (title,auc))
+        else:
+            print('%s = %0.3f +/- %0.3f' % (title,auc,sd))
+    if not no_plot:
+        plt.xlabel('False Positive Rate')#, fontsize='large', fontweight='bold')
+        plt.ylabel('True Positive Rate')#, fontsize='large', fontweight='bold')
+        plt.title('ROC curves')#, fontsize='large', fontweight='bold')
+        plt.xticks()#fontsize='large', fontweight='bold')
+        plt.yticks()#fontsize='large', fontweight='bold')
+        plt.xlim(-0.01,1.01)
+        plt.ylim(-0.01,1.01)
+        plt.legend(loc="lower right",fontsize=17)
+    return aucs,aucs_sd
 
 
 def plot_roc_curves(Y,p,ax=None,label='full',title='AUC',color=None):
@@ -286,15 +424,15 @@ def plot_roc_curves(Y,p,ax=None,label='full',title='AUC',color=None):
 
 def roc_data(X,Y,clf,n_iter=50,test_size=0.1):
     if n_iter is None and test_size is None:
-        cv = LeaveOneOut(Y.shape[0])
+        cv = LeaveOneOut()
     else:
-        cv = ShuffleSplit(Y.shape[0],n_iter=n_iter,test_size=test_size)
+        cv = ShuffleSplit(n_iter=n_iter,test_size=test_size)
     n_labels = Y.shape[1]
     Y_cv = {i:[] for i in range(n_labels)}
     p = {i:[] for i in range(n_labels)}
     p_1 = {i:[] for i in range(n_labels)}
     p_0 = {i:[] for i in range(n_labels)}
-    for train, test in cv:
+    for train, test in cv.split(Y):
         clf.fit(X[train,:], Y[train,:])
         Y_predicted = clf.predict_proba(X[test,:])
         for i in range(Y.shape[1]):
@@ -437,12 +575,12 @@ def fit_models(imps, X, Y, all_props, props=None,
     n_props = len(props) # Number of properties to predict.  
     test_size = 0.2
     if labels is None:
-        shuffle_split = ShuffleSplit(n_obs,n_iter=n_splits,
+        shuffle_split = ShuffleSplit(n_iter=n_splits,
                                      test_size=test_size,random_state=0)
     else:
-        shuffle_split = LabelShuffleSplit(labels,n_iter=n_splits,
+        shuffle_split = GroupShuffleSplit(n_iter=n_splits,
                                           test_size=test_size,random_state=0)
-    n_test_samples = np.max([len(list(shuffle_split)[i][1]) \
+    n_test_samples = np.max([len(list(shuffle_split.split(range(n_obs),groups=labels))[i][1]) \
                             for i in range(n_splits)])
     rs = {imp:np.ma.zeros((n_props,n_splits)) for imp in imps}
     ps = {imp:np.ma.masked_all((n_props,n_splits,n_test_samples)) for imp in imps}
@@ -452,7 +590,8 @@ def fit_models(imps, X, Y, all_props, props=None,
         j = all_props.index(prop)
         print("Fitting model for %s..." % prop)
         for imp in imps:
-            for k,(train,test) in enumerate(shuffle_split):
+            for k,(train,test) in enumerate(shuffle_split.split(range(n_obs),
+                                                                groups=labels)):
                 X_train,X_test = X[imp][train],X[imp][test]
                 Y_train,Y_test = Y[imp][train,j],Y['missing'][test,j]
                 clf_args_ = {key:(value if type(value) is not dict \
@@ -479,10 +618,6 @@ def fit_models(imps, X, Y, all_props, props=None,
     return rs,feature_importances,ys,ps
 
 
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.multiclass import OneVsRestClassifier
-from sklearn.cross_validation import ShuffleSplit,LabelShuffleSplit
-
 def fit_models_mc(imps, X, Y, all_props, props=None,
                labels=None, n_splits=5, 
                clf_args={'n_estimators':25, 
@@ -495,10 +630,10 @@ def fit_models_mc(imps, X, Y, all_props, props=None,
     n_props = len(props) # Number of properties to predict.  
     test_size = 0.2
     if labels is None:
-        shuffle_split = ShuffleSplit(n_obs,n_iter=n_splits,
+        shuffle_split = ShuffleSplit(n_iter=n_splits,
                                      test_size=test_size,random_state=0)
     else:
-        shuffle_split = LabelShuffleSplit(labels,n_iter=n_splits,
+        shuffle_split = LabelShuffleSplit(n_iter=n_splits,
                                           test_size=test_size,random_state=0)
     n_test_samples = np.max([len(list(shuffle_split)[i][1]) \
                             for i in range(n_splits)])
@@ -508,7 +643,7 @@ def fit_models_mc(imps, X, Y, all_props, props=None,
     feature_importances = None#{imp:np.ma.zeros((n_props,n_features,n_splits)) for imp in imps}
     cols = np.array([i for i in range(len(all_props)) if all_props[i] in props])
     for imp in imps:
-        for k,(train,test) in enumerate(shuffle_split):
+        for k,(train,test) in enumerate(shuffle_split.split(range(n_obs),groups=labels)):
             #X_train,X_test = X[imp][train][:,cols],X[imp][test][:,cols]
             #Y_train,Y_test = Y[imp][train][:,cols],Y['missing'][test][:,cols]
             X_train,X_test = X[imp][train,:],X[imp][test,:]
